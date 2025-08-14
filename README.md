@@ -65,7 +65,7 @@ Streamlit 기반 **관리 UI**와 FastAPI 기반 **백엔드 API**(비동기 인
 ### 2) 의존성 설치
 ```bash
 # 가상환경 권장
-python -m venv .venv && source .venv/bin/activate  # Windows: .venv\Scripts\activate
+conda create -n <환경이름> python=3.10
 
 # 백엔드/프론트 공통 의존성
 pip install -r requirements.txt
