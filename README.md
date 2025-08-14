@@ -68,10 +68,11 @@ Streamlit 기반 **관리 UI**와 FastAPI 기반 **백엔드 API**(비동기 인
 conda create -n <환경이름> python=3.10
 
 # 백엔드/프론트 공통 의존성
-pip install -r requirements.txt
-
-# FastAPI 서버 포함 패키지까지 설치하려면
+FastAPI 서버 포함 패키지 설치
 pip install -r requirements-pip.txt
+conda install -c conda-forge "pillow>=10.0.0" "numpy>=1.24.0" pytest
+
+
 ```
 
 ### 3) 환경 변수 설정
