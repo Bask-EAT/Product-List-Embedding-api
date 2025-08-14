@@ -1,0 +1,10 @@
+streamlit>=1.28.0
+torch>=2.0.0
+transformers>=4.35.0
+google-cloud-firestore>=2.14.0
+Pillow>=10.0.0
+numpy>=1.24.0
+einops>=0.7.0
+timm>=0.9.0
+accelerate>=0.24.0
+python-dotenv>=1.0.0
