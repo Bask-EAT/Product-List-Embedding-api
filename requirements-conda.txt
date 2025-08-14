@@ -4,13 +4,3 @@
 pillow>=10.0.0
 numpy>=1.24.0
 pytest
-uvicorn server:app --reload 
-
-
-
-
-streamlit run app.py
-
-conda activate embedf
-
-http://localhost:8000/docs
