@@ -1,4 +1,3 @@
-
 # 🔍 Multimodal RAG — Product List Embedding
 
 Jina CLIP v2 임베딩 + **Google Firestore Vector Search**를 이용해 **텍스트 / 이미지 / 멀티모달** 검색을 제공하는 프로젝트입니다.  
@@ -57,12 +56,14 @@ Streamlit 기반 **관리 UI**와 FastAPI 기반 **백엔드 API**(비동기 인
 ## ⚙️ 설치
 
 ### 1) 사전 준비
+
 - Python **3.10+**
 - Google Cloud 프로젝트 (Firestore **Native mode**)
 - 서비스 계정 키(JSON) 발급
 - (선택) NVIDIA GPU + CUDA (PyTorch)
 
 ### 2) 의존성 설치
+
 ```bash
 # 가상환경 권장
 conda create -n <환경이름> python=3.10
@@ -76,6 +77,7 @@ conda install -c conda-forge "pillow>=10.0.0" "numpy>=1.24.0" pytest
 ```
 
 ### 3) 환경 변수 설정
+
 `.env` 파일을 루트에 생성하고 아래 예시를 채웁니다:
 
 ```dotenv
@@ -88,6 +90,7 @@ MODEL_NAME=jinaai/jina-clip-v2
 
 # Firestore Configuration
 FIRESTORE_PRODUCT_COLLECTION=product-collection
+FIRESTORE_PRICE_COLLECTION=price-collection
 FIRESTORE_VECTOR_COLLECTION=vector-collection
 
 # PyTorch Configuration
@@ -110,6 +113,7 @@ ENVIRONMENT=development
 ```
 
 > **중요 변수**
+>
 > - `GOOGLE_APPLICATION_CREDENTIALS`: 서비스 계정 JSON 파일 경로
 > - `GOOGLE_CLOUD_PROJECT`: GCP 프로젝트 ID
 > - `FIRESTORE_PRODUCT_COLLECTION`, `FIRESTORE_VECTOR_COLLECTION`, (`FIRESTORE_PRICE_COLLECTION` 선택)
@@ -121,23 +125,29 @@ ENVIRONMENT=development
 ## ▶️ 실행
 
 ### A) Streamlit 관리 UI
+
 ```bash
 streamlit run main.py
 ```
+
 기능:
+
 - 텍스트/이미지/멀티모달 검색
 - 결과 미리보기 (상품 썸네일/메타 정보)
 - Firestore 인덱싱 트리거/상태 확인(프로젝트별 구현)
 
 ### B) FastAPI 백엔드
+
 ```bash
 uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 ```
+
 - CORS: `ADMIN_ORIGINS`(콤마 구분) 환경변수로 허용 오리진 제어
 - 상태/로그/웹훅/비동기 인덱싱 엔드포인트 포함
 
-> 참고: 별도로 생성해둔 **OpenAPI 스펙** 및 **Postman 컬렉션**도 제공합니다.  
-> - OpenAPI: `openapi.yaml` ([다운로드](sandbox:/mnt/data/openapi.yaml))  
+> 참고: 별도로 생성해둔 **OpenAPI 스펙** 및 **Postman 컬렉션**도 제공합니다.
+>
+> - OpenAPI: `openapi.yaml` ([다운로드](sandbox:/mnt/data/openapi.yaml))
 > - Postman: `postman_collection.json` ([다운로드](sandbox:/mnt/data/postman_collection.json))
 
 ---
@@ -164,31 +174,34 @@ uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 ## 🧩 Firestore 스키마 (권장)
 
 ### 1) 상품 컬렉션 (`FIRESTORE_PRODUCT_COLLECTION`)
-| 필드 | 타입 | 설명 |
-|---|---|---|
-| id | string | 상품 고유 ID |
-| product_name | string | 상품명 |
-| category | string | 카테고리 |
-| image_url | string | 대표 이미지 URL |
-| product_address | string | 상품 상세 URL |
-| quantity | string | 재고/용량 등 |
-| out_of_stock | string | 품절 여부 플래그 |
-| last_updated | string(ISO) | 상품 정보 갱신시각 |
-| is_emb | string | `R`(미처리) → `D`(처리 완료) |
+
+| 필드            | 타입        | 설명                         |
+| --------------- | ----------- | ---------------------------- |
+| id              | string      | 상품 고유 ID                 |
+| product_name    | string      | 상품명                       |
+| category        | string      | 카테고리                     |
+| image_url       | string      | 대표 이미지 URL              |
+| product_address | string      | 상품 상세 URL                |
+| quantity        | string      | 재고/용량 등                 |
+| out_of_stock    | string      | 품절 여부 플래그             |
+| last_updated    | string(ISO) | 상품 정보 갱신시각           |
+| is_emb          | string      | `R`(미처리) → `D`(처리 완료) |
 
 ### 2) 가격 컬렉션 (`FIRESTORE_PRICE_COLLECTION`, 선택)
-| 필드 | 타입 | 설명 |
-|---|---|---|
-| id | string | 상품 ID (또는 문서 ID 동일) |
-| price | string/number | 최신 가격(평면 필드) |
-| last_price_updated | string(ISO) | 최신 가격 갱신시각 |
-| price_history | array<object> | 시계열 가격 `{{last_updated, original_price, selling_price}}` |
+
+| 필드               | 타입          | 설명                                                          |
+| ------------------ | ------------- | ------------------------------------------------------------- |
+| id                 | string        | 상품 ID (또는 문서 ID 동일)                                   |
+| price              | string/number | 최신 가격(평면 필드)                                          |
+| last_price_updated | string(ISO)   | 최신 가격 갱신시각                                            |
+| price_history      | array<object> | 시계열 가격 `{{last_updated, original_price, selling_price}}` |
 
 ### 3) 벡터 컬렉션 (`FIRESTORE_VECTOR_COLLECTION`)
-| 필드 | 타입 | 설명 |
-|---|---|---|
-| id | string | 상품 ID |
-| text_embedding | vector<float> | 텍스트 임베딩 |
+
+| 필드            | 타입          | 설명          |
+| --------------- | ------------- | ------------- |
+| id              | string        | 상품 ID       |
+| text_embedding  | vector<float> | 텍스트 임베딩 |
 | image_embedding | vector<float> | 이미지 임베딩 |
 
 > Firestore **Vector Search** 사용: `google.cloud.firestore_v1.vector.Vector` 필드로 저장/검색.
@@ -204,6 +217,7 @@ uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 5. 완료 시 등록된 웹훅으로 `{{"event": "indexing_completed"}}` POST
 
 환경변수:
+
 - `INDEX_BATCH_SIZE`(기본 50), `RETRY_ATTEMPTS`(5), `RETRY_BASE_DELAY`(0.2), `RETRY_MAX_DELAY`(3.0), `STATUS_KEEP_LAST`(200)
 
 ---
