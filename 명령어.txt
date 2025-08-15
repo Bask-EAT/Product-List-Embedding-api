@@ -1,9 +1,27 @@
+
+에러시 해결
+
+가상환경 밖에서 conda env remove -n embedf -y
+
+환경 설정 순서
+
+conda activate embedf
+
+conda env create -f environment.yml
+
+pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+
+pip install transformers
+
+pip install einops 
+
 uvicorn server:app --reload 
 
 
 
 
 streamlit run app.py
+
 
 conda activate embedf
 

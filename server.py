@@ -2,10 +2,12 @@
 from __future__ import annotations
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Dict
 from starlette.concurrency import run_in_threadpool
 from google.cloud import firestore
+from google.cloud.firestore_v1 import FieldFilter
 from datetime import datetime
 import os
 import uvicorn
@@ -231,8 +233,14 @@ class SearchResponse(BaseModel):
     results: List[ProductResult]
 
 
+class CategoryCountsResponse(BaseModel):
+    counts: Dict[str, int]
+    total: int
+    ratios: Dict[str, float]
+
+
 # =========================
-# price_history 뷰 제어 (추가)
+# price_history 뷰 제어
 # =========================
 class HistoryView(str, Enum):
     all = "all"  # 전체 이력(관리자용)
@@ -325,7 +333,8 @@ async def background_indexing_async():
             product_collection = vector_db.client.collection(
                 vector_db.product_collection_name
             )
-            query = product_collection.where("is_emb", "==", "R")
+            # ✅ 신식 필터 API
+            query = product_collection.where(filter=FieldFilter("is_emb", "==", "R"))
             docs = query.get()
             return [d.to_dict() for d in docs]
 
@@ -511,7 +520,8 @@ def _fetch_by_field_in(db: firestore.Client, want_ids: List[str]) -> dict[str, d
         chunk = [str(x) for x in want_ids[i : i + IN_CHUNK]]
         if not chunk:
             continue
-        for s in col.where("id", "in", chunk).stream():
+        # ✅ 신식 필터 API로 교체
+        for s in col.where(filter=FieldFilter("id", "in", chunk)).stream():
             d = s.to_dict() or {}
             pid = str(d.get("id") or s.id)
             out[pid] = d
@@ -634,7 +644,7 @@ async def enrich_with_prices(results: List[object]) -> int:
             if latest_hist and latest_hist.get("last_updated"):
                 _set(item, "last_price_updated", str(latest_hist["last_updated"]))
             elif pdata.get("last_price_updated"):
-                _set(item, "last_price_updated", str(pdata.get("last_price_updated")))
+                _set(item, "last_price_updated", str(pdata.get(["last_price_updated"])))
 
         # 상위 필드: quantity / out_of_stock
         if pdata.get("quantity") is not None:
@@ -645,12 +655,49 @@ async def enrich_with_prices(results: List[object]) -> int:
     return merged
 
 
+def _setup_korean_font():
+    """
+    Matplotlib에서 한글 깨짐 방지: 가능한 시스템 폰트를 등록하고 기본 폰트로 지정.
+    Windows: Malgun Gothic, macOS: AppleGothic, Linux: Noto/Nanum 우선.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")  # 서버 렌더링
+    from matplotlib import font_manager, rcParams
+
+    candidates = [
+        (r"C:\Windows\Fonts\malgun.ttf", "Malgun Gothic"),  # Windows
+        ("/System/Library/Fonts/AppleGothic.ttf", "AppleGothic"),  # macOS
+        ("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", "Noto Sans CJK KR"),
+        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "Noto Sans CJK KR"),
+        ("/usr/share/fonts/truetype/nanum/NanumGothic.ttf", "NanumGothic"),
+    ]
+
+    # 경로로 직접 등록 시도
+    for path, name in candidates:
+        try:
+            if os.path.exists(path):
+                font_manager.fontManager.addfont(path)
+                rcParams["font.family"] = name
+                rcParams["axes.unicode_minus"] = False  # 음수 기호 깨짐 방지
+                return
+        except Exception:
+            pass
+
+    # 경로가 없으면 이름으로라도 선택
+    for name in ["Malgun Gothic", "Noto Sans CJK KR", "NanumGothic", "AppleGothic"]:
+        if any(name in f.name for f in font_manager.fontManager.ttflist):
+            rcParams["font.family"] = name
+            rcParams["axes.unicode_minus"] = False
+            return
+
+
 # =========================
 # 검색 API
 # =========================
 @app.post("/search/text", response_model=SearchResponse)
 async def search_products(
-    payload: SearchRequest, history: HistoryView = Query(HistoryView.latest)  # 추가
+    payload: SearchRequest, history: HistoryView = Query(HistoryView.latest)
 ):
     try:
         results = await run_in_threadpool(
@@ -658,7 +705,7 @@ async def search_products(
         )
         safe_remove_embedding(results)
         merged = await enrich_with_prices(results)
-        apply_history_view(results, history)  # 추가
+        apply_history_view(results, history)
         print(f"[search/text] merged={merged}, history={history}")
         return {"results": results}
     except Exception as e:
@@ -678,14 +725,14 @@ async def string2vec(payload: SearchRequest):
 async def search_by_image(
     file: UploadFile = File(...),
     top_k: int = 10,
-    history: HistoryView = Query(HistoryView.latest),  # 추가
+    history: HistoryView = Query(HistoryView.latest),
 ):
     try:
         image = await read_imagefile(file)
         results = await run_in_threadpool(rag_system.search_by_image, image, top_k)
         safe_remove_embedding(results)
         merged = await enrich_with_prices(results)
-        apply_history_view(results, history)  # 추가
+        apply_history_view(results, history)
         print(f"[search/image] merged={merged}, history={history}")
         return {"results": results}
     except Exception as e:
@@ -710,7 +757,7 @@ async def search_multimodal(
     file: UploadFile = File(...),
     top_k: int = Form(30),
     alpha: float = Form(0.7),
-    history: HistoryView = Query(HistoryView.latest),  # 추가(쿼리 파라미터)
+    history: HistoryView = Query(HistoryView.latest),
 ):
     if not (0.0 <= alpha <= 1.0):
         raise HTTPException(status_code=422, detail="alpha must be between 0.0 and 1.0")
@@ -723,13 +770,122 @@ async def search_multimodal(
         )
         safe_remove_embedding(results)
         merged = await enrich_with_prices(results)
-        apply_history_view(results, history)  # 추가
+        apply_history_view(results, history)
         print(f"[search/multimodal] merged={merged}, history={history}")
         return {"results": results}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Multimodal search failed: {e}")
+
+
+# =========================
+# 카테고리 집계 API (JSON)
+# =========================
+@app.get("/metrics/category-counts", response_model=CategoryCountsResponse)
+async def get_category_counts(
+    only_embedded: Optional[str] = Query(
+        None,
+        pattern="^(D|R)$",
+        description="D: 임베딩 완료, R: 임베딩 대기, 미지정: 전체",
+    ),
+    category_field: str = Query("category", description="카테고리 필드명"),
+):
+    """
+    Firestore에서 카테고리별 상품 갯수를 집계하여 반환합니다.
+    - counts: {카테고리: 개수}
+    - total: 전체 개수
+    - ratios: {카테고리: 비율(0~1)}
+    """
+    flag = None
+    if only_embedded == "D":
+        flag = True
+    elif only_embedded == "R":
+        flag = False
+
+    def _fetch():
+        return rag_system.vector_db.get_category_distribution(
+            only_embedded=flag, category_field=category_field
+        )
+
+    data = await run_in_threadpool(_fetch)
+    return CategoryCountsResponse(**data)
+
+
+# =========================
+# 카테고리 원그래프(PNG)
+# =========================
+@app.get("/metrics/category-pie.png")
+async def get_category_pie_png(
+    only_embedded: Optional[str] = Query(
+        None,
+        pattern="^(D|R)$",
+        description="D: 임베딩 완료, R: 임베딩 대기, 미지정: 전체",
+    ),
+    category_field: str = Query("category", description="카테고리 필드명"),
+    show_counts: bool = Query(True, description="라벨에 개수 표시 여부"),
+):
+    """
+    카테고리별 상품 갯수를 원그래프로 렌더링하여 PNG로 반환합니다.
+    (Matplotlib 필요. 미설치 시 500 반환)
+    """
+    flag = None
+    if only_embedded == "D":
+        flag = True
+    elif only_embedded == "R":
+        flag = False
+
+    def _fetch():
+        return rag_system.vector_db.get_category_distribution(
+            only_embedded=flag, category_field=category_field
+        )
+
+    data = await run_in_threadpool(_fetch)
+    counts = data.get("counts", {})
+    total = data.get("total", 0)
+
+    if not counts or total == 0:
+        raise HTTPException(status_code=404, detail="집계할 데이터가 없습니다.")
+
+    # ✅ 한글 폰트 설정
+    _setup_korean_font()
+
+    # 안전한 런타임 임포트
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Matplotlib 불러오기 실패: {e}")
+
+    labels = list(counts.keys())
+    sizes = list(counts.values())
+
+    def _autopct(p):
+        if show_counts:
+            return f"{p:.1f}%\n({int(round(p*total/100))})"
+        return f"{p:.1f}%"
+
+    buf = BytesIO()
+    try:
+        fig, ax = plt.subplots(figsize=(6.5, 6.5))
+        ax.pie(
+            sizes,
+            labels=labels,
+            autopct=_autopct,
+            startangle=90,
+            counterclock=False,
+        )
+        ax.axis("equal")
+        ax.set_title(f"카테고리별 비중 (총 {total}개)")
+        fig.tight_layout()
+        fig.savefig(buf, format="png", dpi=160)
+    finally:
+        plt.close("all")
+
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="image/png")
 
 
 # =========================

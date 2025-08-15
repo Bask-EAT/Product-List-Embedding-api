@@ -1,0 +1,39 @@
+name: embedf
+channels:
+  - conda-forge
+  - pytorch
+  - nvidia
+dependencies:
+  - python=3.10
+  - pip
+  # ---- API / Serving ----
+  - fastapi
+  - starlette
+  - uvicorn
+  - aiohttp
+  - python-multipart
+  - pydantic=2.*
+  # ---- Google Cloud / Firestore ----
+  - google-cloud-firestore>=2.21
+  - google-api-core
+  - google-auth
+  - grpcio
+  # ---- Data / Math / Utils ----
+  - numpy>=1.26
+  - scipy>=1.11
+  - pandas
+  - pillow
+  - matplotlib
+  - python-dotenv
+  - requests
+  - tqdm
+  - regex
+  - coloredlogs
+  - tenacity
+  # ---- ML / Embeddings ----
+  - huggingface_hub
+  - safetensors
+  - accelerate
+  - timm>=1.0.7
+  # ---- (옵션) Streamlit UI ----
+  - streamlit
