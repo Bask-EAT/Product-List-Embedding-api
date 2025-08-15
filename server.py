@@ -1,6 +1,6 @@
 # main.py — async + aiohttp + backoff + batch write + compact status
 from __future__ import annotations
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Any, List, Optional
@@ -17,6 +17,7 @@ from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from contextlib import asynccontextmanager
+from enum import Enum
 
 from PIL import Image
 from dotenv import load_dotenv
@@ -69,9 +70,9 @@ ALLOWED_ORIGINS = _parse_origins(os.getenv("ADMIN_ORIGINS")) or [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,  # 쿠키/인증을 쓰면 True 유지
+    allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],  # ← 다양한 커스텀 헤더/브라우저 preflight 대응
+    allow_headers=["*"],
 )
 
 # =========================
@@ -228,6 +229,39 @@ class ProductResult(BaseModel):
 
 class SearchResponse(BaseModel):
     results: List[ProductResult]
+
+
+# =========================
+# price_history 뷰 제어 (추가)
+# =========================
+class HistoryView(str, Enum):
+    all = "all"  # 전체 이력(관리자용)
+    latest = "latest"  # 최신 1건만(기본)
+    none = "none"  # 필드 제거(최소 페이로드)
+
+
+def _latest_history(hist):
+    if isinstance(hist, list) and hist:
+        return [hist[0]]
+    return None
+
+
+def apply_history_view(items, view: HistoryView):
+    for it in items:
+        hist = _get(it, "price_history")
+        if view == HistoryView.all:
+            continue
+        if view == HistoryView.latest:
+            _set(it, "price_history", _latest_history(hist))
+        elif view == HistoryView.none:
+            if isinstance(it, dict):
+                it.pop("price_history", None)
+            else:
+                try:
+                    delattr(it, "price_history")
+                except Exception:
+                    pass
+    return items
 
 
 # =========================
@@ -414,8 +448,6 @@ PRODUCT_COL = os.getenv("FIRESTORE_PRODUCT_COLLECTION", "emart_product")
 PRICE_COL = os.getenv("FIRESTORE_PRICE_COLLECTION", "emart_price")
 IN_CHUNK = 10  # ✅ Firestore 'in' 쿼리 안전 청크
 
-# 임베딩 결과 가격까지 포함된 코드
-
 
 # ===== 유틸: dict/객체 호환 get/set =====
 def _get(item: object, key: str):
@@ -428,7 +460,6 @@ def _set(item: object, key: str, value):
     if isinstance(item, dict):
         item[key] = value
     else:
-        # Pydantic 모델 등의 객체에도 대응
         try:
             setattr(item, key, value)
         except Exception:
@@ -496,7 +527,6 @@ async def enrich_with_prices(results: List[object]) -> int:
       - price_history (정규화·최신순 정렬)
       - quantity (상위 필드로 주입)
       - out_of_stock (상위 필드로 주입)
-
     dict 뿐 아니라 Pydantic 모델 객체도 지원합니다. 병합된 'price' 갯수 반환.
     """
     if not results:
@@ -550,7 +580,6 @@ async def enrich_with_prices(results: List[object]) -> int:
                             if h.get("selling_price") is not None
                             else None
                         ),
-                        # 요구사항: history에는 quantity를 넣지 않음
                     }
                 )
 
@@ -563,8 +592,7 @@ async def enrich_with_prices(results: List[object]) -> int:
             # 상위에 세팅
             _set(item, "price_history", norm_hist)
 
-        # ----- 최신값 선택 로직 (히스토리 vs 평면 필드) -----
-        # history 후보
+        # ----- 최신값 선택 로직 -----
         latest_hist = norm_hist[0] if norm_hist else None
         hist_ts = (
             _parse_iso_or_none(latest_hist.get("last_updated")) if latest_hist else None
@@ -575,14 +603,11 @@ async def enrich_with_prices(results: List[object]) -> int:
                 latest_hist.get("selling_price")
             ) or _parse_price_to_float(latest_hist.get("original_price"))
 
-        # flat 후보
         flat_raw_price = pdata.get("price", pdata.get("current_price"))
         flat_price = _parse_price_to_float(flat_raw_price)
         flat_ts = _parse_iso_or_none(pdata.get("last_price_updated"))
 
-        # 후보 선택
         def _choose(a_ts, a_price, b_ts, b_price):
-            # a: history, b: flat
             if a_ts and b_ts:
                 return (
                     ("hist", a_ts, a_price) if a_ts >= b_ts else ("flat", b_ts, b_price)
@@ -591,7 +616,6 @@ async def enrich_with_prices(results: List[object]) -> int:
                 return ("hist", a_ts, a_price)
             if b_ts:
                 return ("flat", b_ts, b_price)
-            # 둘 다 타임스탬프 없으면, price가 있는 쪽 우선
             if a_price is not None:
                 return ("hist", None, a_price)
             if b_price is not None:
@@ -604,17 +628,15 @@ async def enrich_with_prices(results: List[object]) -> int:
             _set(item, "price", chosen_price)
             merged += 1
 
-        # last_price_updated 세팅(가능한 경우)
         if chosen_ts:
             _set(item, "last_price_updated", chosen_ts.isoformat())
         else:
-            # 소스 타임스탬프가 없을 때의 폴백
             if latest_hist and latest_hist.get("last_updated"):
                 _set(item, "last_price_updated", str(latest_hist["last_updated"]))
             elif pdata.get("last_price_updated"):
                 _set(item, "last_price_updated", str(pdata.get("last_price_updated")))
 
-        # ----- 상위 필드: quantity / out_of_stock 주입 -----
+        # 상위 필드: quantity / out_of_stock
         if pdata.get("quantity") is not None:
             _set(item, "quantity", str(pdata.get("quantity")))
         if pdata.get("out_of_stock") is not None:
@@ -627,15 +649,17 @@ async def enrich_with_prices(results: List[object]) -> int:
 # 검색 API
 # =========================
 @app.post("/search/text", response_model=SearchResponse)
-async def search_products(payload: SearchRequest):
+async def search_products(
+    payload: SearchRequest, history: HistoryView = Query(HistoryView.latest)  # 추가
+):
     try:
         results = await run_in_threadpool(
             rag_system.search_by_text, payload.query, payload.top_k
         )
         safe_remove_embedding(results)
-        merged = await enrich_with_prices(results)  # ← 반환값 사용
-        print(f"[search/text] merged={merged}")
-
+        merged = await enrich_with_prices(results)
+        apply_history_view(results, history)  # 추가
+        print(f"[search/text] merged={merged}, history={history}")
         return {"results": results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -651,13 +675,18 @@ async def string2vec(payload: SearchRequest):
 
 
 @app.post("/search/image", response_model=SearchResponse)
-async def search_by_image(file: UploadFile = File(...), top_k: int = 10):
+async def search_by_image(
+    file: UploadFile = File(...),
+    top_k: int = 10,
+    history: HistoryView = Query(HistoryView.latest),  # 추가
+):
     try:
         image = await read_imagefile(file)
         results = await run_in_threadpool(rag_system.search_by_image, image, top_k)
         safe_remove_embedding(results)
-        merged = await enrich_with_prices(results)  # ← 반환값 사용
-        print(f"[search/text] merged={merged}")
+        merged = await enrich_with_prices(results)
+        apply_history_view(results, history)  # 추가
+        print(f"[search/image] merged={merged}, history={history}")
         return {"results": results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Image search failed: {str(e)}")
@@ -681,6 +710,7 @@ async def search_multimodal(
     file: UploadFile = File(...),
     top_k: int = Form(30),
     alpha: float = Form(0.7),
+    history: HistoryView = Query(HistoryView.latest),  # 추가(쿼리 파라미터)
 ):
     if not (0.0 <= alpha <= 1.0):
         raise HTTPException(status_code=422, detail="alpha must be between 0.0 and 1.0")
@@ -692,8 +722,9 @@ async def search_multimodal(
             rag_system.search_multimodal, query, image, top_k, alpha
         )
         safe_remove_embedding(results)
-        merged = await enrich_with_prices(results)  # ← 반환값 사용
-        print(f"[search/text] merged={merged}")
+        merged = await enrich_with_prices(results)
+        apply_history_view(results, history)  # 추가
+        print(f"[search/multimodal] merged={merged}, history={history}")
         return {"results": results}
     except HTTPException:
         raise
