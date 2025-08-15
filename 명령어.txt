@@ -9,4 +9,3 @@ conda activate embedf
 
 http://localhost:8000/docs
 
-완전 어려워
