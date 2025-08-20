@@ -1,6 +1,0 @@
-[2025-08-15T14:31:52.302542] Started Firestore indexing
-[2025-08-15T14:31:52.746804] ✅ Indexing completed
-[2025-08-15T14:32:35.486668] Started Firestore indexing
-[2025-08-15T14:32:35.553659] ✅ Indexing completed
-[2025-08-15T15:17:09.480487] Started Firestore indexing
-[2025-08-15T15:17:09.537483] ✅ Indexing completed

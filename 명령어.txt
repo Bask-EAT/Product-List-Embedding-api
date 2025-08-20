@@ -7,6 +7,8 @@
 
 conda activate embedf
 
+설치
+--------------------------
 conda env create -f environment.yml
 
 pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
@@ -14,7 +16,10 @@ pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu12
 pip install transformers
 
 pip install einops 
+-----------------------
 
+
+실행
 uvicorn server:app --reload 
 
 
