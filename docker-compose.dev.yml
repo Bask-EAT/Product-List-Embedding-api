@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: /mnt/data/Product-List-Embedding
+      dockerfile: /mnt/data/dockerized/Dockerfile.backend
+    container_name: ple-backend-dev
+    env_file:
+      - /mnt/data/Product-List-Embedding/.env
+    ports:
+      - "8000:8000"
+    volumes:
+      - /mnt/data/Product-List-Embedding:/app
+    command: >
+      sh -c "uvicorn $APP_MODULE --host 0.0.0.0 --port 8000 --reload"
+    restart: unless-stopped
+
+networks:
+  default:
+    name: ple-net

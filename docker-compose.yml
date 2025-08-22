@@ -1,0 +1,13 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: ./Dockerfile # 실제 파일명에 맞추세요
+    container_name: ple-dev
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./:/app
+    command: >
+      sh -c "uvicorn $APP_MODULE --host 0.0.0.0 --port 8000 --reload"
+    restart: unless-stopped

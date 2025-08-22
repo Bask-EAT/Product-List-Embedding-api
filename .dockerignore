@@ -1,0 +1,17 @@
+# 공통
+.git
+.gitignore
+node_modules
+__pycache__
+*.pyc
+.env
+.env.*
+dist
+build
+.cache
+.vscode
+.idea
+.DS_Store
+npm-debug.log*
+yarn-error.log*
+coverage
