@@ -1,27 +1,29 @@
-# embedding/Dockerfile
+# Dockerfile
 FROM python:3.11-slim
 
+# 기본 환경
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    TZ=Asia/Seoul
+    HF_HOME=/root/.cache/huggingface \
+    TRANSFORMERS_CACHE=/root/.cache/huggingface \
+    HUGGINGFACE_HUB_CACHE=/root/.cache/huggingface
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl tzdata \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends curl && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-COPY requirements.txt /app/requirements.txt
-RUN python -m pip install --upgrade pip && pip install -r /app/requirements.txt
+# 필요한 패키지
+COPY requirements.txt .
+RUN pip install -U pip && pip install -r requirements.txt
 
-COPY . /app
+# 소스 복사
+COPY . .
 
-# 비루트 권장(옵션)
-RUN useradd -m appuser && chown -R appuser:appuser /app
-USER appuser
+# 기본 런타임 환경(필요 시 .env에서 덮어씀)
+ENV GOOGLE_APPLICATION_CREDENTIALS=/keys/sa.json \
+    TORCH_DTYPE=bfloat16
 
-EXPOSE 8000
-
-# ✅ 쉘 없이 exec form / ✅ CMD는 단 한 번만
-ENTRYPOINT ["uvicorn"]
-CMD ["main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+# 헬스체크가 찍는 access log 줄이기(--no-access-log)
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]

@@ -1,13 +1,43 @@
 services:
-  backend:
-    build:
-      context: .
-      dockerfile: ./Dockerfile # 실제 파일명에 맞추세요
-    container_name: ple-dev
+  embed:
+    build: .
+    image: embed:latest
+    container_name: edge-service-embed-1
+
+    env_file:
+      - ./.env
+
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /keys/sa.json
+      HF_HOME: /root/.cache/huggingface
+      TRANSFORMERS_CACHE: /root/.cache/huggingface
+      HUGGINGFACE_HUB_CACHE: /root/.cache/huggingface
+      TORCH_DTYPE: bfloat16
+
+    volumes:
+      # 서비스 계정 키
+      - ./keys/sa.json:/keys/sa.json:ro
+      # HF 모델 캐시
+      - ./hf-cache:/root/.cache/huggingface
+      # 이미지 폴더 유지
+      - D:/docker-images/DockerDesktopWSL:/data/images
+
     ports:
       - "8000:8000"
-    volumes:
-      - ./:/app
-    command: >
-      sh -c "uvicorn $APP_MODULE --host 0.0.0.0 --port 8000 --reload"
+
     restart: unless-stopped
+
+    # ✅ GPU 예약 설정 추가
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: ["gpu"]
+
+    networks:
+      - edge-net
+
+networks:
+  edge-net:
+    external: true

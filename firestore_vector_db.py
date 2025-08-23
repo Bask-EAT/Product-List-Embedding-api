@@ -3,17 +3,19 @@ from __future__ import annotations
 
 import os
 import logging
-import numpy as np
-import requests
+from pathlib import Path
 from io import BytesIO
 from typing import List, Dict, Optional, Callable
-from collections import defaultdict  # ✅ 추가
+from collections import defaultdict
 
+import numpy as np
+import requests
 from PIL import Image
 from dotenv import load_dotenv
 
+from google.oauth2 import service_account
 from google.cloud import firestore
-from google.cloud.firestore_v1 import FieldFilter  # ✅ 신식 필터
+from google.cloud.firestore_v1 import FieldFilter  # 신식 필터
 from google.cloud.firestore_v1.vector import Vector
 from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
 
@@ -51,25 +53,63 @@ class FirestoreVectorDB:
     # Init & connection
     # ----------------------
     def initialize_client(self):
-        """Initialize Firestore client with authentication"""
+        """Initialize Firestore client with authentication (ENV 우선, 안전한 경로 처리)"""
         try:
-            project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
-            creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+            # 1) ENV 우선
+            creds_path_env = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+            # 2) 없으면 컨테이너 기본값(/keys/...)으로 폴백
+            if not creds_path_env:
+                creds_path_env = (
+                    "/keys/bask-eat-firebase-adminsdk-fbsvc-57cb4cbf5b.json"
+                )
 
+            # 3) 경로 정규화 + 존재 체크
+            p = Path(os.path.expandvars(creds_path_env)).expanduser().resolve()
+            if not p.is_file():
+                cwd = Path.cwd()
+                self._nerror(
+                    "❌ Firestore credentials not found\n"
+                    f"  - GOOGLE_APPLICATION_CREDENTIALS(raw): {creds_path_env}\n"
+                    f"  - Resolved path: {p}\n"
+                    f"  - CWD: {cwd}\n"
+                    "  - Hint: 로컬 실행이면 절대경로로 GOOGLE_APPLICATION_CREDENTIALS를 지정하거나,\n"
+                    "          Docker면 ./keys를 /keys로 마운트했는지 확인하세요."
+                )
+                raise ValueError(f"Invalid credentials file: {p}")
+
+            # 4) 서비스 계정 로드
+            creds = service_account.Credentials.from_service_account_file(str(p))
+
+            # 5) 프로젝트 ID: ENV 우선, 없으면 자격증명에서 유도
+            project_id_env = os.getenv("GOOGLE_CLOUD_PROJECT")
+            project_id = project_id_env or creds.project_id
             if not project_id:
-                raise ValueError("GOOGLE_CLOUD_PROJECT environment variable not set")
+                raise ValueError(
+                    "Project ID is not set. "
+                    "Set GOOGLE_CLOUD_PROJECT or ensure credentials contains project_id."
+                )
 
-            if not creds_path or not os.path.exists(creds_path):
-                raise ValueError(f"Invalid credentials file: {creds_path}")
+            # 6) 환경변수 주입(구글 SDK 관례)
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(p)
 
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_path
+            # 7) 필수 콜렉션명 검증(없으면 명시적으로 오류)
+            if not self.product_collection_name:
+                raise ValueError(
+                    "FIRESTORE_PRODUCT_COLLECTION environment variable not set"
+                )
+            if not self.vector_collection_name:
+                raise ValueError(
+                    "FIRESTORE_VECTOR_COLLECTION environment variable not set"
+                )
 
-            self.client = firestore.Client(project=project_id)
+            # 8) 클라이언트 생성
+            self.client = firestore.Client(project=project_id, credentials=creds)
             self._ninfo(
-                "✅ Firestore initialized - "
-                f"Project: {project_id}\n"
-                f"Product Collection: {self.product_collection_name}\n"
-                f"Vector Collection: {self.vector_collection_name}"
+                "✅ Firestore initialized\n"
+                f"  - Project: {project_id}\n"
+                f"  - Creds: {p}\n"
+                f"  - Product Collection: {self.product_collection_name}\n"
+                f"  - Vector  Collection: {self.vector_collection_name}"
             )
 
             self.test_connection()
@@ -97,7 +137,7 @@ class FirestoreVectorDB:
         self,
         embedding_model,
         progress_cb: Optional[Callable[[float], None]] = None,  # 0.0~1.0
-        text_task: str = "retrieval.document",  # 필요 시 조정
+        text_task: str = "retrieval.document",
         image_timeout_sec: int = 10,
     ) -> bool:
         """Store products with embeddings in Firestore"""
@@ -106,14 +146,14 @@ class FirestoreVectorDB:
             product_collection = self.client.collection(self.product_collection_name)
             embedding_collection = self.client.collection(self.vector_collection_name)
 
-            # ✅ 신식 필터 API 사용
+            # 신식 필터 API 사용
             query = product_collection.where(filter=FieldFilter("is_emb", "==", "R"))
             docs = query.get()
             products_data = [doc.to_dict() for doc in docs]
 
             total = len(products_data)
             if total == 0:
-                self._ninfo("ℹ️ No products to index (is_emb == 'R') ")
+                self._ninfo("ℹ️ No products to index (is_emb == 'R')")
                 if progress_cb:
                     progress_cb(1.0)
                 return True
@@ -177,14 +217,14 @@ class FirestoreVectorDB:
             return False
 
     # ----------------------
-    # Aggregation (NEW)
+    # Aggregation
     # ----------------------
     def get_category_counts(
         self,
         only_embedded: Optional[
             bool
         ] = None,  # True: is_emb == "D", False: "R", None: 전체
-        category_field: str = "category",  # 카테고리 필드명
+        category_field: str = "category",
     ) -> Dict[str, int]:
         """
         카테고리별 문서 수를 집계합니다.

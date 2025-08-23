@@ -1,27 +1,47 @@
-pip
-fastapi
-starlette
-uvicorn
-aiohttp
-python-multipart
+# --- ASGI stack ---
+fastapi>=0.110
+uvicorn[standard]>=0.27
 pydantic==2.*
-google-cloud-firestore>=2.21
-google-api-core
-google-auth
-grpcio
+
+# --- Data/Math ---
 numpy>=1.26
 scipy>=1.11
 pandas
+
+# --- Images/Plots (선택) ---
 pillow
 matplotlib
+
+# --- HTTP & Utils ---
+aiohttp
+python-multipart
 python-dotenv
 requests
 tqdm
 regex
 coloredlogs
 tenacity
+
+# --- Google Cloud ---
+google-cloud-firestore>=2.21
+google-api-core
+google-auth
+grpcio
+
+# --- HF/LLM ---
 huggingface_hub
 safetensors
 accelerate
+einops
+transformers>=4.41
+# (옵션) 어떤 모델은 필요
+# sentencepiece
+
+# --- Vision backbones ---
 timm>=1.0.7
+
+# --- Torch (CUDA 12.1) ---
+torch==2.3.1 --index-url https://download.pytorch.org/whl/cu121
+torchvision==0.18.1 --index-url https://download.pytorch.org/whl/cu121
+# --- (옵션) 대시보드/테스트 ---
 streamlit

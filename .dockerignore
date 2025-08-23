@@ -1,17 +1,32 @@
-# 공통
+# VCS / Node / Python
 .git
 .gitignore
 node_modules
-__pycache__
-*.pyc
-.env
-.env.*
 dist
 build
-.cache
-.vscode
-.idea
+__pycache__
+.venv
+*.pyc
+
+# Env / Keys / Logs
+.env
+.env.*
+*.log
+keys/
+*.pem
+
+# Hugging Face / 모델 캐시
+hf-cache/
+.huggingface/
+.cache/
+cache/
+models/
+**/*.bin
+**/*.safetensors
+**/pytorch_model*
+
+# OS/IDE
 .DS_Store
-npm-debug.log*
-yarn-error.log*
-coverage
+Thumbs.db
+.idea
+.vscode
