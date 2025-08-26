@@ -659,37 +659,56 @@ def _setup_korean_font():
     """
     Matplotlib에서 한글 깨짐 방지: 가능한 시스템 폰트를 등록하고 기본 폰트로 지정.
     Windows: Malgun Gothic, macOS: AppleGothic, Linux: Noto/Nanum 우선.
+    - rcParams에 기본 폰트를 설정하고, FontProperties를 반환하여 텍스트 객체에 직접 지정 가능.
     """
-    import matplotlib
-
-    matplotlib.use("Agg")  # 서버 렌더링
+    import matplotlib as mpl
     from matplotlib import font_manager, rcParams
 
-    candidates = [
-        (r"C:\Windows\Fonts\malgun.ttf", "Malgun Gothic"),  # Windows
-        ("/System/Library/Fonts/AppleGothic.ttf", "AppleGothic"),  # macOS
-        ("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", "Noto Sans CJK KR"),
-        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "Noto Sans CJK KR"),
-        ("/usr/share/fonts/truetype/nanum/NanumGothic.ttf", "NanumGothic"),
-    ]
+    # 새로 설치한 폰트가 있더라도 즉시 인식되도록 캐시 리로드
+    try:
+        font_manager._load_fontmanager(try_read_cache=False)
+    except Exception:
+        pass
 
-    # 경로로 직접 등록 시도
-    for path, name in candidates:
-        try:
-            if os.path.exists(path):
-                font_manager.fontManager.addfont(path)
-                rcParams["font.family"] = name
-                rcParams["axes.unicode_minus"] = False  # 음수 기호 깨짐 방지
-                return
-        except Exception:
-            pass
-
-    # 경로가 없으면 이름으로라도 선택
-    for name in ["Malgun Gothic", "Noto Sans CJK KR", "NanumGothic", "AppleGothic"]:
-        if any(name in f.name for f in font_manager.fontManager.ttflist):
+    # 1) 설치 이름으로 우선 탐색
+    installed_names = {f.name for f in font_manager.fontManager.ttflist}
+    for name in [
+        "Noto Sans CJK KR",
+        "Noto Sans KR",
+        "Malgun Gothic",
+        "Apple SD Gothic Neo",
+        "AppleGothic",
+        "NanumGothic",
+    ]:
+        if name in installed_names:
             rcParams["font.family"] = name
             rcParams["axes.unicode_minus"] = False
-            return
+            return font_manager.FontProperties(family=name)
+
+    # 2) 경로로 직접 등록
+    candidate_paths = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansKR-Regular.otf",
+        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+        r"C:\Windows\Fonts\malgun.ttf",
+        "/System/Library/Fonts/AppleGothic.ttf",
+    ]
+    for p in candidate_paths:
+        try:
+            if os.path.exists(p):
+                font_manager.fontManager.addfont(p)
+                # 등록된 폰트의 내부 이름을 알아내기 위해 Properties 생성
+                fp = font_manager.FontProperties(fname=p)
+                name = fp.get_name() or "sans-serif"
+                rcParams["font.family"] = name
+                rcParams["axes.unicode_minus"] = False
+                return fp
+        except Exception:
+            continue
+
+    # 3) 마지막 안전장치
+    rcParams["axes.unicode_minus"] = False
+    return font_manager.FontProperties()  # 기본
 
 
 # =========================
@@ -847,17 +866,16 @@ async def get_category_pie_png(
     if not counts or total == 0:
         raise HTTPException(status_code=404, detail="집계할 데이터가 없습니다.")
 
-    # ✅ 한글 폰트 설정
-    _setup_korean_font()
-
-    # 안전한 런타임 임포트
+    # 안전한 런타임 임포트 + 백엔드 렌더러 준비
     try:
         import matplotlib
 
-        matplotlib.use("Agg")
+        matplotlib.use("Agg", force=True)  # 헤드리스 렌더러
+        # ✅ 폰트 설정(전역 rcParams + FontProperties 반환)
+        font_prop = _setup_korean_font()
         import matplotlib.pyplot as plt
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Matplotlib 불러오기 실패: {e}")
+        raise HTTPException(status_code=500, detail=f"Matplotlib 초기화 실패: {e}")
 
     labels = list(counts.keys())
     sizes = list(counts.values())
@@ -870,15 +888,18 @@ async def get_category_pie_png(
     buf = BytesIO()
     try:
         fig, ax = plt.subplots(figsize=(6.5, 6.5))
+        # ✅ 라벨/퍼센트 텍스트 모두 한글 폰트 강제
         ax.pie(
             sizes,
             labels=labels,
             autopct=_autopct,
             startangle=90,
             counterclock=False,
+            textprops={"fontproperties": font_prop},
         )
         ax.axis("equal")
-        ax.set_title(f"카테고리별 비중 (총 {total}개)")
+        # ✅ 타이틀에도 한글 폰트 강제
+        ax.set_title(f"카테고리별 비중 (총 {total}개)", fontproperties=font_prop)
         fig.tight_layout()
         fig.savefig(buf, format="png", dpi=160)
     finally:

@@ -9,9 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TRANSFORMERS_CACHE=/root/.cache/huggingface \
     HUGGINGFACE_HUB_CACHE=/root/.cache/huggingface
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl && \
-    rm -rf /var/lib/apt/lists/*
-
+RUN  apt-get update && apt-get install -y --no-install-recommends curl fonts-noto-cjk && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 # 필요한 패키지
@@ -22,8 +20,8 @@ RUN pip install -U pip && pip install -r requirements.txt
 COPY . .
 
 # 기본 런타임 환경(필요 시 .env에서 덮어씀)
-ENV GOOGLE_APPLICATION_CREDENTIALS=/keys/sa.json \
-    TORCH_DTYPE=bfloat16
+ENV TORCH_DTYPE=bfloat16
+
 
 # 헬스체크가 찍는 access log 줄이기(--no-access-log)
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
