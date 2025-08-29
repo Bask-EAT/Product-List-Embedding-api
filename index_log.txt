@@ -1,0 +1,4 @@
+[2025-08-29T12:43:25.391971] Started Firestore indexing
+[2025-08-29T12:45:09.664686] 🛑 Indexing stopped by request (outer)
+[2025-08-29T12:58:37.399196] Started Firestore indexing
+[2025-08-29T13:04:55.730882] 🛑 Indexing stopped by request

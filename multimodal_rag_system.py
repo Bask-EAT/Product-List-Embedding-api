@@ -62,9 +62,6 @@ class MultimodalRAGSystem:
             self._nerror("❌ No products loaded")
             return False
 
-        # 기존 구조 유지: FirestoreVectorDB가 내부에서 products_data를 참조한다면
-        # 그대로 두세요. 필요 시 아래처럼 전달하는 방식으로 변경하세요.
-        # return self.vector_db.store_products(self.embedding_model, self.products_data)
         try:
             ok = self.vector_db.store_products(self.embedding_model)
             if ok:
@@ -79,8 +76,26 @@ class MultimodalRAGSystem:
     # -------------------------
     # Search: text / image / multimodal
     # -------------------------
-    def search_by_text(self, query: str, limit: int = 30) -> List[Dict]:
-        """Search products using text query"""
+    def search_by_text(
+        self,
+        query: str,
+        limit: int = 30,
+        use_crossmodal: bool = False,
+        text_weight: float = 0.6,
+        image_weight: float = 0.4,
+    ) -> List[Dict]:
+        """
+        Search products using text query.
+        - use_crossmodal=True: 텍스트 쿼리 하나로 텍스트+이미지 융합(Late Fusion) 검색 사용
+        """
+        if use_crossmodal:
+            return self.search_by_text_crossmodal(
+                query=query,
+                limit=limit,
+                text_weight=text_weight,
+                image_weight=image_weight,
+            )
+
         self._ninfo(f"🔍 Text search: '{query}'")
 
         query_embedding = self.embedding_model.encode_text(
@@ -90,12 +105,49 @@ class MultimodalRAGSystem:
             self._nerror("❌ Failed to create text embedding")
             return []
 
-        results = self.vector_db.vector_search(query_embedding, limit)
+        results = self.vector_db.vector_search(
+            query_embedding, limit, query_type="text"
+        )
         if results:
             product_ids = [r.get("id", "Unknown") for r in results[:5]]
             self._ninfo(f"✅ Top results: {', '.join(product_ids)}")
 
-        # self.log.debug("search_by_text results: %s", results)  # 원하면 디버그 로그
+        return results or []
+
+    def search_by_text_crossmodal(
+        self,
+        query: str,
+        limit: int = 30,
+        text_weight: float = 0.6,
+        image_weight: float = 0.4,
+    ) -> List[Dict]:
+        """
+        텍스트 쿼리 1개로 '텍스트 임베딩'과 '이미지 임베딩' 컬럼을 각각 검색한 뒤,
+        가중치 기반 Late Fusion으로 최종 랭킹을 반환합니다.
+        (firestore_vector_db.vector_search_crossmodal_text 사용)
+        """
+        self._ninfo(
+            f"🔀 Crossmodal (Late Fusion) text search: '{query}' "
+            f"(w_text={text_weight:.2f}, w_image={image_weight:.2f})"
+        )
+
+        query_embedding = self.embedding_model.encode_text(
+            query, task="retrieval.query"
+        )
+        if not query_embedding:
+            self._nerror("❌ Failed to create text embedding for crossmodal search")
+            return []
+
+        results = self.vector_db.vector_search_crossmodal_text(
+            text_query_embedding=query_embedding,
+            limit=limit,
+            weights=(text_weight, image_weight),
+        )
+
+        if results:
+            names = [r.get("product_name", r.get("id", "Unknown")) for r in results[:5]]
+            self._ninfo(f"✅ Crossmodal top results: {', '.join(names)}")
+
         return results or []
 
     def search_by_image(
@@ -120,78 +172,56 @@ class MultimodalRAGSystem:
         self, text_query: str, image: Image.Image, limit: int = 30, alpha: float = 0.7
     ) -> List[Dict]:
         """
-        Multimodal search: combine text & image signals.
-        alpha: weight for image (0~1), text weight = 1 - alpha
+        Multimodal search (Late Fusion):
+        - 텍스트/이미지 각각 별도 검색 → alpha 가중치로 점수 합산 → 최종 랭킹
+        - 백엔드(vector_search 응답에 임베딩 미포함)와 완전 호환
         """
-        self._ninfo(f"🔀 Multimodal search: '{text_query}' + image")
-
-        text_embedding = self.embedding_model.encode_text(
-            text_query, task="retrieval.query"
+        self._ninfo(
+            f"🔀 Multimodal search (Late Fusion): '{text_query}' + image (alpha={alpha:.2f})"
         )
-        image_embedding = self.embedding_model.encode_image(image)
 
-        if not text_embedding or not image_embedding:
+        # 쿼리 임베딩
+        text_emb = self.embedding_model.encode_text(text_query, task="retrieval.query")
+        image_emb = self.embedding_model.encode_image(image)
+        if not text_emb or not image_emb:
             self._nerror("❌ Failed to create multimodal embeddings")
             return []
 
-        # Independent searches
-        text_results = (
-            self.vector_db.vector_search(text_embedding, limit=limit, query_type="text")
-            or []
+        # 개별 검색 (융합 전 넉넉히 가져오기)
+        K = max(limit * 2, 50)
+        text_res = (
+            self.vector_db.vector_search(text_emb, limit=K, query_type="text") or []
         )
-        image_results = (
-            self.vector_db.vector_search(
-                image_embedding, limit=limit, query_type="image"
-            )
-            or []
+        image_res = (
+            self.vector_db.vector_search(image_emb, limit=K, query_type="image") or []
         )
 
-        # Deduplicate by doc id
-        combined_dict: Dict[str, Dict] = {}
-        for doc in text_results + image_results:
-            doc_id = doc.get("id")
-            if doc_id and doc_id not in combined_dict:
-                combined_dict[doc_id] = doc
-        combined_results: List[Dict] = list(combined_dict.values())
+        # id 기준 가중 합산
+        w_img, w_text = alpha, (1.0 - alpha)
+        merged: Dict[str, Dict] = {}
 
-        # Build combined embedding per doc
-        alpha_img, alpha_text = alpha, 1.0 - alpha
-        for doc in combined_results:
-            text_emb = doc.get("text_embedding", [])
-            image_emb = doc.get("image_embedding", [])
-            if text_emb and image_emb:
-                # zip: 길이 불일치 시 최소 길이에 맞춰 자름(모델 차원 동일 가정)
-                doc["combined_embedding"] = [
-                    alpha_img * i + alpha_text * t for i, t in zip(image_emb, text_emb)
-                ]
-            elif text_emb:
-                doc["combined_embedding"] = text_emb
-            elif image_emb:
-                doc["combined_embedding"] = image_emb
-            else:
-                doc["combined_embedding"] = []
+        def _acc(lst, w):
+            for it in lst:
+                pid = it.get("id")
+                if not pid:
+                    continue
+                base = merged.get(pid, {"id": pid, "similarity_score": 0.0})
+                base["similarity_score"] += w * float(it.get("similarity_score", 0.0))
+                # 메타가 비어있으면 한 번만 채운다
+                if "product_name" not in base and isinstance(it, dict):
+                    for k, v in it.items():
+                        if k != "similarity_score" and k not in base:
+                            base[k] = v
+                merged[pid] = base
 
-        # Query combined embedding
-        query_combined_embedding = [
-            alpha_img * i + alpha_text * t
-            for i, t in zip(image_embedding, text_embedding)
-        ]
+        _acc(text_res, w_text)
+        _acc(image_res, w_img)
 
-        # Dot product similarity
-        def dot_product(a, b):
-            return sum(x * y for x, y in zip(a, b))
+        out = list(merged.values())
+        out.sort(key=lambda x: x.get("similarity_score", 0.0), reverse=True)
+        top = out[:limit]
 
-        combined_results.sort(
-            key=lambda d: dot_product(
-                d.get("combined_embedding", []), query_combined_embedding
-            ),
-            reverse=True,
-        )
-
-        top_results = combined_results[:limit] if combined_results else []
-
-        if top_results:
-            product_names = [r.get("product_name", "Unknown") for r in top_results[:5]]
-            self._ninfo(f"✅ Top results: {', '.join(product_names)}")
-
-        return top_results
+        if top:
+            names = [r.get("product_name", r.get("id", "Unknown")) for r in top[:5]]
+            self._ninfo(f"✅ Top results: {', '.join(names)}")
+        return top

@@ -29,7 +29,6 @@ def validate_environment() -> bool:
     return True
 
 
-
 def display_search_results(results: List[Dict]):
     """Display search results in Streamlit"""
     if not results:
@@ -70,5 +69,3 @@ def display_search_results(results: List[Dict]):
 
                 if result.get("product_address"):
                     st.markdown(f"[🔗 View Product]({result['product_address']})")
-
-                    

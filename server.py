@@ -20,15 +20,16 @@ from io import BytesIO
 from pathlib import Path
 from contextlib import asynccontextmanager
 from enum import Enum
-
 from PIL import Image
 from dotenv import load_dotenv
 from google.cloud.firestore_v1.vector import Vector
 import aiohttp  # pip install aiohttp
 
 # ---- 내부 모듈(동기 함수 포함 가능)
+import firestore_vector_db
 from multimodal_rag_system import MultimodalRAGSystem
 from jina_clip_embedding import JinaCLIPEmbedding
+
 
 load_dotenv()
 
@@ -82,6 +83,7 @@ app.add_middleware(
 # =========================
 rag_system = MultimodalRAGSystem()
 embedding_model = JinaCLIPEmbedding()
+
 
 BASE_DIR = Path(__file__).resolve().parent
 STATUS_FILE = BASE_DIR / "index_status.json"
@@ -201,6 +203,13 @@ async def retry_threadpool(
 class SearchRequest(BaseModel):
     query: str
     top_k: int = 10
+
+
+class CrossModalIn(BaseModel):
+    query: str
+    top_k: int = 30
+    text_weight: float = 0.6
+    image_weight: float = 0.4
 
 
 class VectorResponse(BaseModel):
@@ -350,24 +359,60 @@ async def background_indexing_async():
 
             def _commit():
                 batch = vector_db.client.batch()
-                vector_collection = vector_db.client.collection(
-                    vector_db.vector_collection_name
+
+                # ✅ 단일/분리형 자동 분기
+                split_mode = bool(
+                    not vector_db.vector_collection_name
+                    and vector_db.vector_collection_text
+                    and vector_db.vector_collection_image
                 )
+
                 product_collection = vector_db.client.collection(
                     vector_db.product_collection_name
                 )
-                for it in pending:
-                    vref = vector_collection.document(it["id"])
-                    pref = product_collection.document(it["id"])
-                    batch.set(
-                        vref,
-                        {
-                            "id": it["id"],
-                            "text_embedding": Vector(it["text_emb"]),
-                            "image_embedding": Vector(it["image_emb"]),
-                        },
+
+                if split_mode:
+                    text_col = vector_db.client.collection(
+                        vector_db.vector_collection_text
                     )
-                    batch.update(pref, {"is_emb": "D"})
+                    img_col = vector_db.client.collection(
+                        vector_db.vector_collection_image
+                    )
+                    for it in pending:
+                        vref_t = text_col.document(it["id"])
+                        vref_i = img_col.document(it["id"])
+                        pref = product_collection.document(it["id"])
+
+                        batch.set(
+                            vref_t,
+                            {"id": it["id"], "text_embedding": Vector(it["text_emb"])},
+                        )
+                        batch.set(
+                            vref_i,
+                            {
+                                "id": it["id"],
+                                "image_embedding": Vector(it["image_emb"]),
+                            },
+                        )
+                        batch.update(pref, {"is_emb": "D"})
+                else:
+                    vector_collection = vector_db.client.collection(
+                        vector_db.vector_collection_name
+                    )
+                    for it in pending:
+                        vref = vector_collection.document(it["id"])
+                        pref = product_collection.document(it["id"])
+
+                        batch.set(
+                            vref,
+                            {
+                                "id": it["id"],
+                                "text_embedding": Vector(it["text_emb"]),
+                                "image_embedding": Vector(it["image_emb"]),
+                            },
+                        )
+                        batch.update(pref, {"is_emb": "D"})
+
                 batch.commit()
 
             await retry_threadpool(_commit)
@@ -394,9 +439,13 @@ async def background_indexing_async():
                     raise ValueError("Missing required fields")
 
                 _check_cancel()
+                # ✅ 텍스트 임베딩은 문서 인덱싱 태스크로 고정
                 text_emb = await retry_threadpool(
-                    _embedding_model.encode_text, product["product_name"]
+                    _embedding_model.encode_text,
+                    product["product_name"],
+                    "retrieval.query",
                 )
+
                 _check_cancel()
 
                 img_bytes = await http_get_bytes(product["image_url"])
@@ -644,7 +693,7 @@ async def enrich_with_prices(results: List[object]) -> int:
             if latest_hist and latest_hist.get("last_updated"):
                 _set(item, "last_price_updated", str(latest_hist["last_updated"]))
             elif pdata.get("last_price_updated"):
-                _set(item, "last_price_updated", str(pdata.get(["last_price_updated"])))
+                _set(item, "last_price_updated", str(pdata.get("last_price_updated")))
 
         # 상위 필드: quantity / out_of_stock
         if pdata.get("quantity") is not None:
@@ -796,6 +845,28 @@ async def search_multimodal(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Multimodal search failed: {e}")
+
+
+# ✅ 멀티모달 Late Fusion 텍스트 검색 전용
+@app.post("/search/crossmodal-text", response_model=SearchResponse)
+async def crossmodal_text_search(
+    payload: CrossModalIn, history: HistoryView = Query(HistoryView.latest)
+):
+    try:
+        results = await run_in_threadpool(
+            rag_system.search_by_text_crossmodal,
+            payload.query,
+            payload.top_k,
+            payload.text_weight,
+            payload.image_weight,
+        )
+        safe_remove_embedding(results)
+        merged = await enrich_with_prices(results)
+        apply_history_view(results, history)
+        print(f"[search/crossmodal-text] merged={merged}, history={history}")
+        return {"results": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # =========================
